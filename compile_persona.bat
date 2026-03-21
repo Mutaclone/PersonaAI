@@ -4,8 +4,9 @@ title Persona — EEL Compiler
 
 echo.
 echo  ╔══════════════════════════════════════════════╗
-echo  ║       PERSONA — EEL COMPILER  v1.4           ║
+echo  ║       PERSONA — EEL COMPILER  v1.5           ║
 echo  ║  Drop an HTML file onto this bat to compile  ║
+echo  ║  (Safe mode: lower RAM/CPU, crash-proof)     ║
 echo  ╚══════════════════════════════════════════════╝
 echo.
 
@@ -84,10 +85,15 @@ for %%B in (
     )
 )
 
-echo         Not in standard locations — doing deep search (may take a moment)...
-for /f "delims=" %%F in ('where /r "%SYSTEMDRIVE%\" python.exe 2^>nul') do (
-    set "PYTHON=%%F" & goto :python_found
-)
+echo.
+echo  [WARN] Python was not found in any standard location.
+echo  A deep disk search has been skipped to protect your system.
+echo.
+echo  Please do one of the following:
+echo    1. Install Python from https://python.org
+echo       (check "Add Python to PATH" during setup)
+echo    2. If Python is already installed, add its folder to your PATH
+echo.
 
 echo  [ERROR] Could not locate Python on this machine.
 echo  Install from https://python.org — check "Add Python to PATH" during setup.
@@ -185,16 +191,24 @@ copy /y "%HTML_PATH%" "%WEB_DIR%\index.html" >nul
 echo         Copied to: %WEB_DIR%\index.html
 
 :: ── Run PyInstaller ───────────────────────────────────────────
+:: SAFETY NOTES (v1.5):
+::   --onedir  instead of --onefile  = much lower RAM/CPU (prevents crashes)
+::   --clean   REMOVED               = allows cached rebuilds (5-10x faster)
+::
+:: If you need a single-file exe, change --onedir back to --onefile,
+:: but ONLY on a machine with 8+ GB RAM. It will use 2-4 GB during build.
 echo.
-echo  [5/7] Running PyInstaller (30-90 seconds)...
+echo  [5/7] Running PyInstaller (folder mode — safe for all machines)...
+echo         Using --onedir mode (lower RAM/CPU usage, prevents crashes).
+echo         Cached builds are reused — subsequent builds will be faster.
 echo.
 
 cd /d "%BAT_DIR%"
 
 if defined ICON_ARG (
-    echo         Using icon: %ICON_ARG%
+    echo         Using icon: %ICO_PATH%
     "%PYTHON%" -m PyInstaller ^
-        --onefile ^
+        --onedir ^
         --windowed ^
         --name "%HTML_NAME%" ^
         --add-data "web;web" ^
@@ -206,11 +220,10 @@ if defined ICON_ARG (
         --hidden-import "PIL.Image" ^
         --hidden-import "PIL.PngImagePlugin" ^
         --noconfirm ^
-        --clean ^
         main.py
 ) else (
     "%PYTHON%" -m PyInstaller ^
-        --onefile ^
+        --onedir ^
         --windowed ^
         --name "%HTML_NAME%" ^
         --add-data "web;web" ^
@@ -221,7 +234,6 @@ if defined ICON_ARG (
         --hidden-import "PIL.Image" ^
         --hidden-import "PIL.PngImagePlugin" ^
         --noconfirm ^
-        --clean ^
         main.py
 )
 
@@ -236,39 +248,53 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: ── Copy exe to same folder as HTML ──────────────────────────
+:: ── Copy output to same folder as HTML ───────────────────────
+:: --onedir produces a folder with exe + dependencies, not a single file.
 echo.
-echo  [6/7] Copying output exe...
+echo  [6/7] Copying output folder...
 
-set "EXE_SRC=%BAT_DIR%dist\%HTML_NAME%.exe"
-set "EXE_DEST=%HTML_DIR%%HTML_NAME%.exe"
+set "OUT_DIR=%BAT_DIR%dist\%HTML_NAME%"
+set "EXE_SRC=%OUT_DIR%\%HTML_NAME%.exe"
+set "DEST_DIR=%HTML_DIR%%HTML_NAME%"
 
 if not exist "%EXE_SRC%" (
     echo  [ERROR] Built exe not found at: %EXE_SRC%
+    echo  The --onedir build may have failed. Check the output above.
     pause
     exit /b 1
 )
 
-copy /y "%EXE_SRC%" "%EXE_DEST%" >nul
+:: Copy entire output folder
+if exist "%DEST_DIR%" rd /s /q "%DEST_DIR%"
+xcopy /s /e /i /q "%OUT_DIR%" "%DEST_DIR%" >nul
+echo         Copied to: %DEST_DIR%\
 
 :: ── Clean up build artifacts ──────────────────────────────────
-echo  [7/7] Cleaning build folders...
-if exist "%BAT_DIR%build"       rd /s /q "%BAT_DIR%build"
-if exist "%BAT_DIR%dist"        rd /s /q "%BAT_DIR%dist"
+:: NOTE: We keep build/ and dist/ as cache for faster rebuilds.
+::       Only __pycache__ and .spec files are cleaned.
+echo  [7/7] Cleaning temporary files...
 if exist "%BAT_DIR%__pycache__" rd /s /q "%BAT_DIR%__pycache__"
 for %%F in ("%BAT_DIR%*.spec") do del /q "%%F"
+echo         Done. (build/ and dist/ kept as cache for faster rebuilds)
 
 echo.
 echo  ╔══════════════════════════════════════════════╗
 echo  ║               BUILD COMPLETE!                ║
 echo  ╚══════════════════════════════════════════════╝
 echo.
-echo   Output : %EXE_DEST%
+echo   Output : %DEST_DIR%\%HTML_NAME%.exe
+echo.
+echo   The output is a folder — distribute the entire
+echo   "%HTML_NAME%\" folder (exe + dependencies).
 echo.
 echo   On first launch, a "characters\" folder and
 echo   "settings.config" will be created next to the exe.
 echo.
+echo   [TIP] If your antivirus flags the exe or slows your PC:
+echo         Add an exclusion for the output folder:
+echo         %DEST_DIR%\
+echo.
 
-explorer /select,"%EXE_DEST%"
+explorer /select,"%DEST_DIR%\%HTML_NAME%.exe"
 pause
 exit /b 0
