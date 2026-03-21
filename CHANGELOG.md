@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.5.1] — 2026-03-21
+
+### ✨ Features
+- **Message Editing**: Added the ability to inline edit any past chat messages (both User and AI). Hover over a message to reveal an Edit (✎) button, which transforms the message into a text area to correct typos or steer roleplay.
+- **NSFW / 18+ Badges**: Added a toggle to the Character Editor to mark characters as "18+ / NSFW".
+    - This flag is properly embedded in V2 and V1 card JSON exports.
+    - When pushed to the community server, the `server.py` gallery will now parse and visibly display a red `[18+]` and `18+ / NSFW` badge to warn users of mature content before downloading.
+
+---
+
 ## [1.5.0] — 2026-03-21
 
 ### 🔧 Fixed — Compiler Crash (compile_persona.bat)

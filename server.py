@@ -640,6 +640,19 @@ if _BOTTLE_OK:
                     continue
                 fpath = os.path.join(folder, fname)
                 name  = os.path.splitext(fname)[0]
+
+                # Extract NSFW badge from metadata
+                is_nsfw = False
+                if source == 'community':
+                    meta_path = os.path.join(folder, "cards_meta.json")
+                    if os.path.exists(meta_path):
+                        try:
+                            with open(meta_path, 'r', encoding='utf-8') as f:
+                                meta = json.load(f)
+                                is_nsfw = meta.get(fname, {}).get('nsfw', False)
+                        except Exception:
+                            pass
+
                 cards.append({
                     'filename':    fname,
                     'name':        name,
@@ -649,6 +662,7 @@ if _BOTTLE_OK:
                     'url_thumb':    f'/cards/{source}/{urllib.parse.quote(fname)}' if fname.lower().endswith('.png') else None,
                     'size':        os.path.getsize(fpath),
                     'modified':    os.path.getmtime(fpath),
+                    'nsfw':        is_nsfw,
                 })
         return _json(cards)
 
@@ -679,12 +693,30 @@ if _BOTTLE_OK:
         os.makedirs(folder, exist_ok=True)
         save_path = os.path.join(folder, fname)
         upload.save(save_path, overwrite=True)
+
+        is_nsfw = request.forms.get('nsfw') in ['1', 'true', 'True']
+        meta_path = os.path.join(folder, "cards_meta.json")
+        meta = {}
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+            except Exception:
+                pass
+        meta[fname] = {'nsfw': is_nsfw, 'uploaded_by': user['id']}
+        try:
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                json.dump(meta, f)
+        except Exception:
+            pass
+
         _broadcast({
             'type': 'card_uploaded',
             'data': {
                 'filename': fname, 'name': os.path.splitext(fname)[0],
                 'uploaded_by': _public_user(user),
                 'url_download': f'/cards/community/{urllib.parse.quote(fname)}',
+                'nsfw': is_nsfw,
             }
         })
         return _json({'ok': True, 'filename': fname, 'uploaded_by': user['id']}, 201)
@@ -1345,7 +1377,10 @@ async function loadGallery() {
       <div class="card-info">
         <div class="card-name">${escHtml(c.name)}</div>
         <div class="card-meta">${(c.size/1024).toFixed(1)} KB</div>
-        <span class="source-badge source-${c.source}">${c.source}</span>
+        <div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
+          <span class="source-badge source-${c.source}">${c.source}</span>
+          ${c.nsfw ? '<span style="font-size:9.5px;font-weight:700;color:var(--red);padding:1px 5px;background:rgba(200,74,74,0.12);border-radius:3px">18+</span>' : ''}
+        </div>
       </div>
     </div>`).join('');
 }
@@ -1354,7 +1389,7 @@ function openCard(cardJson) {
   const c = JSON.parse(cardJson);
   _selectedCard = c;
   document.getElementById('card-detail').classList.remove('hidden');
-  document.getElementById('cd-name').textContent = c.name;
+  document.getElementById('cd-name').innerHTML = escHtml(c.name) + (c.nsfw ? ' <span style="font-size:12px;font-weight:700;color:var(--red);background:rgba(200,74,74,0.12);padding:2px 6px;border-radius:3px;vertical-align:middle;margin-left:8px">18+ / NSFW</span>' : '');
   document.getElementById('cd-desc').textContent = '';
   const img = document.getElementById('cd-img');
   if (c.has_png) { img.src = c.url_thumb; img.style.display = 'block'; }
