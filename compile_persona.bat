@@ -4,9 +4,9 @@ title Persona — EEL Compiler
 
 echo.
 echo  ╔══════════════════════════════════════════════╗
-echo  ║       PERSONA — EEL COMPILER  v1.5           ║
+echo  ║       PERSONA — EEL COMPILER  v1.6           ║
 echo  ║  Drop an HTML file onto this bat to compile  ║
-echo  ║  (Safe mode: lower RAM/CPU, crash-proof)     ║
+echo  ║  (Single-file mode: one .exe, no extras)     ║
 echo  ╚══════════════════════════════════════════════╝
 echo.
 
@@ -191,16 +191,17 @@ copy /y "%HTML_PATH%" "%WEB_DIR%\index.html" >nul
 echo         Copied to: %WEB_DIR%\index.html
 
 :: ── Run PyInstaller ───────────────────────────────────────────
-:: SAFETY NOTES (v1.5):
-::   --onedir  instead of --onefile  = much lower RAM/CPU (prevents crashes)
-::   --clean   REMOVED               = allows cached rebuilds (5-10x faster)
+:: v1.6: switched back to --onefile for single-exe distribution.
+:: The web/ folder is bundled inside the exe and extracted at runtime
+:: via sys._MEIPASS (handled in app.py).
 ::
-:: If you need a single-file exe, change --onedir back to --onefile,
-:: but ONLY on a machine with 8+ GB RAM. It will use 2-4 GB during build.
+:: NOTE: --onefile uses 2-4 GB RAM during build (compression step).
+::       If your machine has less than 8 GB RAM, the build may be slow
+::       or fail. In that case, change --onefile to --onedir below.
 echo.
-echo  [5/7] Running PyInstaller (folder mode — safe for all machines)...
-echo         Using --onedir mode (lower RAM/CPU usage, prevents crashes).
-echo         Cached builds are reused — subsequent builds will be faster.
+echo  [5/7] Running PyInstaller (single-file mode)...
+echo         Building self-contained exe with all assets bundled inside.
+echo         This may use 2-4 GB RAM during compression.
 echo.
 
 cd /d "%BAT_DIR%"
@@ -208,10 +209,11 @@ cd /d "%BAT_DIR%"
 if defined ICON_ARG (
     echo         Using icon: %ICO_PATH%
     "%PYTHON%" -m PyInstaller ^
-        --onedir ^
+        --onefile ^
         --windowed ^
         --name "%HTML_NAME%" ^
         --add-data "web;web" ^
+        --add-data "server.py;." ^
         --icon "%ICO_PATH%" ^
         --hidden-import "bottle" ^
         --hidden-import "bottle_websocket" ^
@@ -223,10 +225,11 @@ if defined ICON_ARG (
         main.py
 ) else (
     "%PYTHON%" -m PyInstaller ^
-        --onedir ^
+        --onefile ^
         --windowed ^
         --name "%HTML_NAME%" ^
         --add-data "web;web" ^
+        --add-data "server.py;." ^
         --hidden-import "bottle" ^
         --hidden-import "bottle_websocket" ^
         --hidden-import "geventwebsocket" ^
@@ -243,31 +246,28 @@ if errorlevel 1 (
     echo  Common fixes:
     echo    - Right-click this .bat and "Run as administrator"
     echo    - Temporarily disable antivirus
+    echo    - If out of RAM, edit this bat and change --onefile to --onedir
     echo.
     pause
     exit /b 1
 )
 
-:: ── Copy output to same folder as HTML ───────────────────────
-:: --onedir produces a folder with exe + dependencies, not a single file.
+:: ── Copy output exe to same folder as HTML ───────────────────
 echo.
-echo  [6/7] Copying output folder...
+echo  [6/7] Copying output...
 
-set "OUT_DIR=%BAT_DIR%dist\%HTML_NAME%"
-set "EXE_SRC=%OUT_DIR%\%HTML_NAME%.exe"
-set "DEST_DIR=%HTML_DIR%%HTML_NAME%"
+set "EXE_SRC=%BAT_DIR%dist\%HTML_NAME%.exe"
+set "EXE_DEST=%HTML_DIR%%HTML_NAME%.exe"
 
 if not exist "%EXE_SRC%" (
     echo  [ERROR] Built exe not found at: %EXE_SRC%
-    echo  The --onedir build may have failed. Check the output above.
+    echo  The build may have failed. Check the output above.
     pause
     exit /b 1
 )
 
-:: Copy entire output folder
-if exist "%DEST_DIR%" rd /s /q "%DEST_DIR%"
-xcopy /s /e /i /q "%OUT_DIR%" "%DEST_DIR%" >nul
-echo         Copied to: %DEST_DIR%\
+copy /y "%EXE_SRC%" "%EXE_DEST%" >nul
+echo         Copied to: %EXE_DEST%
 
 :: ── Clean up build artifacts ──────────────────────────────────
 :: NOTE: We keep build/ and dist/ as cache for faster rebuilds.
@@ -282,19 +282,19 @@ echo  ╔═══════════════════════�
 echo  ║               BUILD COMPLETE!                ║
 echo  ╚══════════════════════════════════════════════╝
 echo.
-echo   Output : %DEST_DIR%\%HTML_NAME%.exe
+echo   Output : %EXE_DEST%
 echo.
-echo   The output is a folder — distribute the entire
-echo   "%HTML_NAME%\" folder (exe + dependencies).
+echo   This is a single self-contained .exe — just
+echo   share the file. No folders or dependencies needed.
 echo.
 echo   On first launch, a "characters\" folder and
 echo   "settings.config" will be created next to the exe.
 echo.
-echo   [TIP] If your antivirus flags the exe or slows your PC:
-echo         Add an exclusion for the output folder:
-echo         %DEST_DIR%\
+echo   [TIP] If your antivirus flags the exe:
+echo         Add an exclusion for: %EXE_DEST%
 echo.
 
-explorer /select,"%DEST_DIR%\%HTML_NAME%.exe"
+explorer /select,"%EXE_DEST%"
 pause
 exit /b 0
+

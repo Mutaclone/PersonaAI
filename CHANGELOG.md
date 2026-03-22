@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.6.0] — 2026-03-22
+
+### 📦 Single-Exe Distribution
+
+The build now produces a **single self-contained `.exe`** — no folders, no extras. Just share the file.
+
+#### Changed
+
+- **`--onedir` → `--onefile`** — PyInstaller now compresses everything (Python runtime, web UI, dependencies) into one `.exe`. Distribution is now: "send the file, double-click, done." (`compile_persona.bat`)
+- **`sys._MEIPASS` asset resolution** — `app.py` now uses PyInstaller's `sys._MEIPASS` to locate the bundled `web/` folder instead of looking relative to the exe. This works correctly in both `--onefile` (temp extraction) and `--onedir` (`_internal/`) modes. (`app.py`)
+- **Split `BASE_DIR` into `APP_DIR` + `BUNDLE_DIR`** — User data (settings, characters, logs, themes) writes to `APP_DIR` (next to the exe), while bundled assets (web UI) are read from `BUNDLE_DIR` (`sys._MEIPASS`). This prevents writing to read-only temp directories. (`app.py`)
+- **`server.py` now bundles inside the exe** — Added `--add-data "server.py;."` to the build so the community server module is packed in. (`compile_persona.bat`)
+- **Compiler version** — `v1.5` → `v1.6` with updated banner. (`compile_persona.bat`)
+
+#### Fixed
+
+- **404 "File does not exist"** — The built exe showed a 404 error because `app.py` looked for `web/` next to the exe, but PyInstaller 6+ places bundled data in `_internal/`. Now resolved via `sys._MEIPASS`. (`app.py`)
+- **Stale `BASE_DIR` reference** — The community server uploads path in `app.py` still referenced the old `BASE_DIR` after the rename to `APP_DIR`. (`app.py`)
+
+---
+
 ## [1.5.2] — 2026-03-22
 
 ### 🔒 Security Audit & Hardening

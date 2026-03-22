@@ -25,6 +25,8 @@ from datetime import datetime
 from pathlib import Path
 
 # ── Detect base directory ─────────────────────────────────────
+# Community data (JSON files, uploads) must live next to the exe
+# (writable, persistent) — NOT in _MEIPASS (read-only temp dir).
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:

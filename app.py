@@ -23,16 +23,26 @@ import zlib
 
 # ── Base directory ────────────────────────────────────────────
 if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.dirname(sys.executable)
+    # Directory containing the executable (for user data)
+    APP_DIR = os.path.dirname(sys.executable)
+    # Directory containing bundled PyInstaller assets (e.g. web/)
+    BUNDLE_DIR = sys._MEIPASS
 else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+    BUNDLE_DIR = APP_DIR
 
-CONFIG_FILE    = os.path.join(BASE_DIR, 'settings.config')
-DEFAULT_CHARS  = os.path.join(BASE_DIR, 'characters')
-DEFAULT_LOGS   = os.path.join(BASE_DIR, 'logs')
-DEFAULT_THEMES = os.path.join(BASE_DIR, 'themes')
+CONFIG_FILE    = os.path.join(APP_DIR, 'settings.config')
+DEFAULT_CHARS  = os.path.join(APP_DIR, 'characters')
+DEFAULT_LOGS   = os.path.join(APP_DIR, 'logs')
+DEFAULT_THEMES = os.path.join(APP_DIR, 'themes')
 
-eel.init(os.path.join(BASE_DIR, 'web'))
+# ── Locate the web folder ─────────────────────────────────────
+WEB_DIR = os.path.join(BUNDLE_DIR, 'web')
+if not os.path.isdir(WEB_DIR):
+    print(f'[FATAL] web/ folder not found at {WEB_DIR}')
+    sys.exit(1)
+
+eel.init(WEB_DIR)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1090,7 +1100,7 @@ def community_server_start(cfg: dict) -> dict:
         cfg['chars_folder'] = DEFAULT_CHARS
     if not cfg.get('uploads_folder'):
         cfg['uploads_folder'] = os.path.join(
-            os.path.join(BASE_DIR, 'community'), 'uploads')
+            os.path.join(APP_DIR, 'community'), 'uploads')
     return _community_server.start(cfg)
 
 
