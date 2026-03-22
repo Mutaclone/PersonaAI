@@ -674,6 +674,30 @@
       color: var(--text-muted);
     }
 
+    /* ── Instruct regen UI ── */
+    .msg-instruct-area {
+      width: 100%;
+      min-height: 42px;
+      background: var(--elevated);
+      color: var(--text);
+      border: 1px solid var(--blue);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.5;
+      resize: vertical;
+      outline: none;
+    }
+
+    .msg-instruct-label {
+      font-size: 11px;
+      color: var(--blue);
+      font-family: 'JetBrains Mono', monospace;
+      margin-bottom: 4px;
+      letter-spacing: .03em;
+    }
+
     /* ── NSFW badge ── */
     .nsfw-badge {
       font-size: 9px;
@@ -3841,7 +3865,7 @@
     const IDB_VERSION = 1;
     const IDB_STORE = 'appdata';
     const DEF_THEME = { name: 'Void', vars: { ...PRESETS[0].vars }, customCSS: '' };
-    const DEF_SETTINGS = { provider: 'anthropic', apiKey: '', baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-20250514', temperature: 0.8, maxTokens: 2048, context: 20, streaming: true, showAva: true, showNames: true, charactersFolder: '', logsFolder: '', themesFolder: '', remoteServerUrl: 'https://persona.dragonsphere.io', remoteApiKey: '', remoteAutoPush: false, };
+    const DEF_SETTINGS = { provider: 'anthropic', apiKey: '', baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-20250514', temperature: 0.8, maxTokens: 2048, context: 20, streaming: true, showAva: true, showNames: true, charactersFolder: '', logsFolder: '', themesFolder: '', personasFolder: '', remoteServerUrl: 'https://persona.dragonsphere.io', remoteApiKey: '', remoteAutoPush: false, };
     const DEF_DISCORD = { botToken: '', channelId: '', activeWebhookId: '', displayName: '', pollInterval: 10, webhooks: [], };
     const DEF_USER = { name: 'User', avatar: null };
 
@@ -4010,6 +4034,27 @@
       await eelCall('delete_character_file', folder, filename);
     }
 
+    async function savePersonaToDisk(persona) {
+      if (!IS_EEL) return;
+      const folder = S.settings.personasFolder;
+      if (!folder) return;
+      const filename = safeName(persona.name) + '.json';
+      const data = JSON.stringify({
+        id: persona.id, name: persona.name, bio: persona.bio || '',
+        traits: persona.traits || '', scenario: persona.scenario || '',
+        avatar: persona.avatar || null, createdAt: persona.createdAt,
+      }, null, 2);
+      await eelCall('save_persona_file', folder, filename, data);
+    }
+
+    async function deletePersonaFromDisk(persona) {
+      if (!IS_EEL) return;
+      const folder = S.settings.personasFolder;
+      if (!folder) return;
+      const filename = safeName(persona.name) + '.json';
+      await eelCall('delete_persona_file', folder, filename);
+    }
+
     // ── Load from eel on startup ──────────────────────────────────
     async function loadFromDisk() {
       if (!IS_EEL) return;
@@ -4040,6 +4085,12 @@
         if (def) S.settings.themesFolder = def;
       }
 
+      // Ensure we have a personas folder set
+      if (!S.settings.personasFolder) {
+        const def = await eelCall('get_default_personas_folder');
+        if (def) S.settings.personasFolder = def;
+      }
+
       // Load characters from disk (merge, don't overwrite existing)
       if (S.settings.charactersFolder) {
         const files = await eelCall('list_character_files', S.settings.charactersFolder) || [];
@@ -4054,6 +4105,24 @@
             if (!char.id) char.id = uuid();
             S.characters.push(char);
           }
+        }
+      }
+
+      // Load personas from disk (merge, don't overwrite existing)
+      if (S.settings.personasFolder) {
+        const files = await eelCall('list_persona_files', S.settings.personasFolder) || [];
+        for (const filename of files) {
+          const raw = await eelCall('load_persona_file', S.settings.personasFolder, filename);
+          if (!raw) continue;
+          try {
+            const p = JSON.parse(raw);
+            if (!p.name) continue;
+            if (!p.id) p.id = uuid();
+            // Don't duplicate
+            if (!S.personas.find(x => x.name === p.name && x.createdAt === p.createdAt)) {
+              S.personas.push(p);
+            }
+          } catch { continue; }
         }
       }
 
@@ -4124,7 +4193,8 @@
       const div = document.createElement('div'); div.className = `message ${isUser ? 'user' : 'char'}`;
       div.dataset.idx = idx;
       const ah = !S.settings.showAva ? ' style="display:none"' : '', nh = !S.settings.showNames ? ' style="display:none"' : '';
-      const actions = `<div class="msg-actions"><button class="msg-action-btn" onclick="editMsg(${idx})" title="Edit message">✎</button><button class="msg-action-btn" onclick="deleteMsg(${idx})" title="Delete message">🗑</button></div>`;
+      const instructBtn = !isUser ? `<button class="msg-action-btn" onclick="instructMsg(${idx})" title="Regenerate with instruction">📝</button>` : '';
+      const actions = `<div class="msg-actions">${instructBtn}<button class="msg-action-btn" onclick="editMsg(${idx})" title="Edit message">✎</button><button class="msg-action-btn" onclick="deleteMsg(${idx})" title="Delete message">🗑</button></div>`;
       div.innerHTML = `<div class="msg-ava"${ah}><div class="ava${isUser ? ' blue' : ''}">${avaHTML(ava, name)}</div></div><div class="msg-bubble">${actions}<div class="msg-name"${nh}>${escHtml(name)}</div><div class="msg-content">${md(msg.content)}</div></div>`;
       return div;
     }
@@ -4162,6 +4232,49 @@
     }
 
     function cancelEdit() { renderMessages(); }
+
+    function instructMsg(idx) {
+      const c = activeChar(); if (!c) return;
+      const chat = activeChat(c.id); if (!chat) return;
+      const msg = chat.messages[idx]; if (!msg || msg.role !== 'assistant') return;
+      const el = document.querySelector(`.message[data-idx="${idx}"]`);
+      if (!el) return;
+      const bubble = el.querySelector('.msg-bubble');
+      const contentEl = bubble.querySelector('.msg-content');
+      const actionsEl = bubble.querySelector('.msg-actions');
+      if (actionsEl) actionsEl.style.display = 'none';
+      const originalHtml = contentEl.innerHTML;
+      contentEl.innerHTML = `<div class="msg-instruct-label">📝 Instruction — tell the AI how to redo this response</div><textarea class="msg-instruct-area" id="instruct-ta-${idx}" placeholder="e.g. Make this more dramatic, respond in third person, be more sarcastic..."></textarea><div class="msg-edit-btns"><button class="msg-edit-cancel" onclick="cancelEdit()">Cancel</button><button class="msg-edit-save" style="background:var(--blue);border-color:var(--blue)!important" onclick="doInstructRegen(${idx})">↺ Regenerate</button></div>`;
+      const ta = document.getElementById('instruct-ta-' + idx);
+      ta.focus();
+      ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.max(42, ta.scrollHeight) + 'px'; });
+      ta.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doInstructRegen(idx); } });
+    }
+
+    function doInstructRegen(idx) {
+      const c = activeChar(); if (!c) return;
+      const chat = activeChat(c.id); if (!chat) return;
+      const ta = document.getElementById('instruct-ta-' + idx);
+      const instruction = ta ? ta.value.trim() : '';
+      if (!instruction) { toast('Type an instruction first.'); return; }
+
+      // Remove the AI message at this index
+      chat.messages.splice(idx, 1);
+
+      // Find the last user message before this point
+      let userIdx = -1;
+      for (let i = Math.min(idx, chat.messages.length) - 1; i >= 0; i--) {
+        if (chat.messages[i].role === 'user') { userIdx = i; break; }
+      }
+      if (userIdx < 0) { toast('No user message to regenerate from.'); return; }
+
+      const userText = chat.messages[userIdx].content;
+      chat.messages.splice(userIdx, 1);
+      save(); renderMessages();
+
+      // Send with the instruction injected
+      doSend(userText, instruction);
+    }
 
     function deleteMsg(idx) {
       const c = activeChar(); if (!c) return;
@@ -4737,7 +4850,7 @@
     }
 
     document.getElementById('btn-save-settings').onclick = () => {
-      S.settings = { provider: document.getElementById('s-provider').value, apiKey: document.getElementById('s-api-key').value.trim(), baseUrl: document.getElementById('s-base-url').value.trim().replace(/\/+$/, ''), model: document.getElementById('s-model').value.trim(), temperature: parseFloat(document.getElementById('s-temp').value), maxTokens: parseInt(document.getElementById('s-max-tokens').value) || 2048, context: parseInt(document.getElementById('s-context').value) || 20, streaming: document.getElementById('s-stream').value === '1', showAva: document.getElementById('s-show-ava').value === '1', showNames: document.getElementById('s-show-names').value === '1', charactersFolder: document.getElementById('s-chars-folder').value.trim(), logsFolder: document.getElementById('s-logs-folder').value.trim(), themesFolder: document.getElementById('s-themes-folder').value.trim() };
+      S.settings = { ...S.settings, provider: document.getElementById('s-provider').value, apiKey: document.getElementById('s-api-key').value.trim(), baseUrl: document.getElementById('s-base-url').value.trim().replace(/\/+$/, ''), model: document.getElementById('s-model').value.trim(), temperature: parseFloat(document.getElementById('s-temp').value), maxTokens: parseInt(document.getElementById('s-max-tokens').value) || 2048, context: parseInt(document.getElementById('s-context').value) || 20, streaming: document.getElementById('s-stream').value === '1', showAva: document.getElementById('s-show-ava').value === '1', showNames: document.getElementById('s-show-names').value === '1', charactersFolder: document.getElementById('s-chars-folder').value.trim(), logsFolder: document.getElementById('s-logs-folder').value.trim(), themesFolder: document.getElementById('s-themes-folder').value.trim() };
       save(); closeModal('modal-settings'); if (S.activeCharId) document.getElementById('header-sub').textContent = S.settings.model; renderMessages(); toast('Settings saved.');
     };
 
@@ -4887,12 +5000,17 @@
     }
 
     let sending = false;
-    async function doSend(userText) {
+    async function doSend(userText, instruction) {
       if (sending || !userText.trim()) return; const c = activeChar(); if (!c) return;
       if (!S.settings.apiKey && S.settings.provider !== 'ollama') { toast('⚠ No API key set. Open Settings.'); openSettings(); return; }
       sending = true; document.getElementById('btn-send').disabled = true; document.getElementById('btn-regen').style.display = 'none'; document.getElementById('btn-stop').style.display = 'inline';
       const chat = ensureChat(c.id); chat.messages.push({ role: 'user', content: userText }); save(); renderMessages();
-      const sys = buildSystemPrompt(c);
+      let sys = buildSystemPrompt(c);
+      // If an instruction was provided (Instruct Regen), inject it into the system prompt
+      if (instruction) {
+        const hint = `\n\n[INSTRUCTION FROM USER: ${instruction}. Follow this instruction for your next response.]`;
+        sys = sys ? sys + hint : hint;
+      }
       const apiMsgs = buildContextMessages(chat, sys);
       const wrap = document.getElementById('messages');
       const ph = document.createElement('div'); ph.className = 'message char';
@@ -6077,6 +6195,7 @@
       p.scenario = document.getElementById('pe-scenario').value.trim();
       p.avatar = document.getElementById('pe-ava-preview').dataset.src || null;
       save();
+      savePersonaToDisk(p);
       renderPersonaList();
       updateActivePersonaPill();
       toast(`Persona "${p.name}" saved.`);
@@ -6101,6 +6220,7 @@
       S.user.name = p.name;
       S.user.avatar = p.avatar;
       save();
+      savePersonaToDisk(p);
       renderPersonaList();
       updateActivePersonaPill();
       document.getElementById('pe-active-banner').style.display = 'block';
@@ -6114,6 +6234,7 @@
       if (!_editPersonaId) return;
       const p = S.personas.find(x => x.id === _editPersonaId);
       if (!p || !confirm(`Delete persona "${p.name}"?`)) return;
+      deletePersonaFromDisk(p);
       S.personas = S.personas.filter(x => x.id !== _editPersonaId);
       if (S.activePersonaId === _editPersonaId) {
         S.activePersonaId = S.personas[0]?.id || null;

@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.6.1] — 2026-03-22
+
+### ✨ New Features
+
+#### 📝 Instruct Regen (OpenCharacters-style)
+
+Hover any AI message → click 📝 → type an instruction like *"make this more dramatic"* or *"respond in third person"*. The AI's response is removed and regenerated with your instruction injected into the system prompt. The instruction is one-shot — it's not saved permanently, just used for that single regeneration.
+
+- Added `instructMsg()` and `doInstructRegen()` functions. (`persona.html`)
+- Modified `doSend()` to accept an optional `instruction` parameter. (`persona.html`)
+- Added CSS for `.msg-instruct-area` and `.msg-instruct-label`. (`persona.html`)
+
+#### 💾 Persona Disk Persistence
+
+Personas now save to and load from a `personas/` folder on disk (desktop app only), just like characters and themes.
+
+- Added 5 new Eel-exposed functions: `get_default_personas_folder()`, `list_persona_files()`, `load_persona_file()`, `save_persona_file()`, `delete_persona_file()`. (`app.py`)
+- Added `DEFAULT_PERSONAS` path constant. (`app.py`)
+- Added `personasFolder` to `DEF_SETTINGS`. (`persona.html`)
+- Added `savePersonaToDisk()` and `deletePersonaFromDisk()` functions. (`persona.html`)
+- Wired persona save/delete/set-active handlers to persist on disk. (`persona.html`)
+- Personas are loaded from disk on startup via `loadFromDisk()`. (`persona.html`)
+
+#### 🔧 Settings Save Fix
+
+- The settings save handler now preserves non-UI fields (like `personasFolder`, `remoteServerUrl`, `remoteApiKey`) instead of overwriting them. This prevents data loss when saving settings. (`persona.html`)
+
+---
+
 ## [1.6.0] — 2026-03-22
 
 ### 📦 Single-Exe Distribution

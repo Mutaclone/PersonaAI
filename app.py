@@ -32,9 +32,10 @@ else:
     BUNDLE_DIR = APP_DIR
 
 CONFIG_FILE    = os.path.join(APP_DIR, 'settings.config')
-DEFAULT_CHARS  = os.path.join(APP_DIR, 'characters')
-DEFAULT_LOGS   = os.path.join(APP_DIR, 'logs')
-DEFAULT_THEMES = os.path.join(APP_DIR, 'themes')
+DEFAULT_CHARS    = os.path.join(APP_DIR, 'characters')
+DEFAULT_LOGS     = os.path.join(APP_DIR, 'logs')
+DEFAULT_THEMES   = os.path.join(APP_DIR, 'themes')
+DEFAULT_PERSONAS = os.path.join(APP_DIR, 'personas')
 
 # ── Locate the web folder ─────────────────────────────────────
 WEB_DIR = os.path.join(BUNDLE_DIR, 'web')
@@ -82,6 +83,10 @@ def get_default_logs_folder():
 @eel.expose
 def get_default_themes_folder():
     return DEFAULT_THEMES
+
+@eel.expose
+def get_default_personas_folder():
+    return DEFAULT_PERSONAS
 
 
 # ══════════════════════════════════════════════════════════════
@@ -447,6 +452,62 @@ def delete_theme_file(themes_folder: str, filename: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════
+#  PERSONAS
+#  User personas are stored as .json files in APP_DIR/personas/
+# ══════════════════════════════════════════════════════════════
+
+@eel.expose
+def list_persona_files(personas_folder: str) -> list:
+    """Return list of .json filenames in the personas folder."""
+    results = []
+    if not os.path.isdir(personas_folder):
+        os.makedirs(personas_folder, exist_ok=True)
+        return results
+    for fname in sorted(os.listdir(personas_folder)):
+        if fname.lower().endswith('.json'):
+            results.append(fname)
+    return results
+
+
+@eel.expose
+def load_persona_file(personas_folder: str, filename: str) -> str | None:
+    """Load a persona JSON file and return its raw string."""
+    try:
+        path = _safe_path(personas_folder, filename)
+        with open(path, encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        print(f'[load_persona_file] {e}')
+        return None
+
+
+@eel.expose
+def save_persona_file(personas_folder: str, filename: str, json_str: str) -> str | None:
+    """Save a persona JSON string to the personas folder. Returns path or None."""
+    try:
+        os.makedirs(personas_folder, exist_ok=True)
+        path = _safe_path(personas_folder, filename)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(json_str)
+        return path
+    except Exception as e:
+        print(f'[save_persona_file] {e}')
+        return None
+
+
+@eel.expose
+def delete_persona_file(personas_folder: str, filename: str) -> bool:
+    """Delete a persona file."""
+    try:
+        path = _safe_path(personas_folder, filename)
+        if os.path.exists(path):
+            os.remove(path)
+        return True
+    except Exception as e:
+        print(f'[delete_persona_file] {e}')
+        return False
+
+
 #  DISCORD API PROXY
 #  All bot-token requests are routed through Python to avoid
 #  CORS restrictions that Discord enforces on browser requests.
