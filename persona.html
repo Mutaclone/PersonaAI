@@ -3416,8 +3416,10 @@
     }
 
     function initials(n) { return (n || '?').split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase(); }
+    /** Escape HTML entities to prevent XSS from user-controlled content. */
+    function escHtml(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
     function avaHTML(src, name) {
-      if (src) return `<img src="${src}" alt="" onerror="this.parentElement.innerHTML='${initials(name)}'">`;
+      if (src) return `<img src="${escHtml(src)}" alt="" onerror="this.parentElement.innerHTML='${initials(name)}'">`;
       return initials(name);
     }
     function md(raw) {
@@ -3835,19 +3837,159 @@
     //  STATE
     // ══════════════════════════════════════════════════════════════
     const SK = 'persona_v2';
+    const IDB_NAME = 'PersonaDB';
+    const IDB_VERSION = 1;
+    const IDB_STORE = 'appdata';
     const DEF_THEME = { name: 'Void', vars: { ...PRESETS[0].vars }, customCSS: '' };
-    const DEF_SETTINGS = { provider: 'anthropic', apiKey: '', baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-20250514', temperature: 0.8, maxTokens: 2048, context: 20, streaming: true, showAva: true, showNames: true, charactersFolder: '', logsFolder: '', themesFolder: '', remoteServerUrl: 'https://persona.dragonsphere.io', remoteApiKey: 'SFlEUkEgRE9NSU5BVFVT', remoteAutoPush: false, };
+    const DEF_SETTINGS = { provider: 'anthropic', apiKey: '', baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-20250514', temperature: 0.8, maxTokens: 2048, context: 20, streaming: true, showAva: true, showNames: true, charactersFolder: '', logsFolder: '', themesFolder: '', remoteServerUrl: 'https://persona.dragonsphere.io', remoteApiKey: '', remoteAutoPush: false, };
     const DEF_DISCORD = { botToken: '', channelId: '', activeWebhookId: '', displayName: '', pollInterval: 10, webhooks: [], };
     const DEF_USER = { name: 'User', avatar: null };
 
     let S = { user: { ...DEF_USER }, settings: { ...DEF_SETTINGS }, discord: { ...DEF_DISCORD }, theme: { ...DEF_THEME, vars: { ...DEF_THEME.vars } }, characters: [], chats: {}, personas: [], activePersonaId: null, activeCharId: null, activeChatId: {} };
 
-    function load() {
-      try { const raw = localStorage.getItem(SK); if (raw) { const p = JSON.parse(raw); S.user = { ...DEF_USER, ...(p.user || {}) }; S.settings = { ...DEF_SETTINGS, ...(p.settings || {}) }; S.discord = { ...DEF_DISCORD, ...(p.discord || {}) }; if (!Array.isArray(S.discord.webhooks)) S.discord.webhooks = []; S.theme = { ...DEF_THEME, vars: { ...DEF_THEME.vars }, ...(p.theme || {}) }; if (!S.theme.vars) S.theme.vars = { ...DEF_THEME.vars }; S.characters = p.characters || []; S.chats = p.chats || {}; S.personas = p.personas || []; S.activePersonaId = p.activePersonaId || null; S.activeCharId = p.activeCharId || null; S.activeChatId = p.activeChatId || {}; } } catch (e) { console.warn(e); }
+    // ── IndexedDB storage layer (replaces localStorage for large data) ──
+    let _idb = null;
+    let _idbReady = false;
+    let _saveQueued = false;
+
+    function openIDB() {
+      return new Promise((resolve, reject) => {
+        try {
+          const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+          req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains(IDB_STORE)) {
+              db.createObjectStore(IDB_STORE);
+            }
+          };
+          req.onsuccess = () => { _idb = req.result; _idbReady = true; resolve(_idb); };
+          req.onerror = () => { console.warn('[IDB] open failed:', req.error); reject(req.error); };
+        } catch (e) { console.warn('[IDB] not available:', e); reject(e); }
+      });
     }
 
+    function idbPut(key, value) {
+      if (!_idb) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        try {
+          const tx = _idb.transaction(IDB_STORE, 'readwrite');
+          tx.objectStore(IDB_STORE).put(value, key);
+          tx.oncomplete = resolve;
+          tx.onerror = () => { console.warn('[IDB] put error:', tx.error); reject(tx.error); };
+        } catch (e) { console.warn('[IDB] put exception:', e); resolve(); }
+      });
+    }
+
+    function idbGet(key) {
+      if (!_idb) return Promise.resolve(undefined);
+      return new Promise((resolve, reject) => {
+        try {
+          const tx = _idb.transaction(IDB_STORE, 'readonly');
+          const req = tx.objectStore(IDB_STORE).get(key);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => { console.warn('[IDB] get error:', req.error); resolve(undefined); };
+        } catch (e) { console.warn('[IDB] get exception:', e); resolve(undefined); }
+      });
+    }
+
+    /** Load state: try IndexedDB first, fall back to localStorage, migrate if needed */
+    async function load() {
+      // Open IndexedDB
+      try { await openIDB(); } catch { /* proceed with localStorage only */ }
+
+      let loaded = false;
+
+      // Try IndexedDB first
+      if (_idbReady) {
+        try {
+          const idbData = await idbGet('state');
+          if (idbData) {
+            _applyLoadedState(idbData);
+            loaded = true;
+          }
+        } catch (e) { console.warn('[IDB] load failed:', e); }
+      }
+
+      // Fall back to localStorage
+      if (!loaded) {
+        try {
+          const raw = localStorage.getItem(SK);
+          if (raw) {
+            const p = JSON.parse(raw);
+            _applyLoadedState(p);
+            loaded = true;
+            // Migrate to IndexedDB in background
+            if (_idbReady) {
+              idbPut('state', JSON.parse(JSON.stringify(S))).then(() => {
+                // Clear heavy data from localStorage after successful migration
+                try {
+                  const lite = { _migrated: true, settings: S.settings, user: S.user,
+                    theme: S.theme, discord: S.discord, activeCharId: S.activeCharId,
+                    activePersonaId: S.activePersonaId, activeChatId: S.activeChatId };
+                  localStorage.setItem(SK, JSON.stringify(lite));
+                  console.log('[Storage] Migrated to IndexedDB — localStorage freed.');
+                } catch { /* ok */ }
+              });
+            }
+          }
+        } catch (e) { console.warn('[localStorage] load error:', e); }
+      }
+    }
+
+    /** Apply a parsed state object onto S */
+    function _applyLoadedState(p) {
+      S.user = { ...DEF_USER, ...(p.user || {}) };
+      S.settings = { ...DEF_SETTINGS, ...(p.settings || {}) };
+      S.discord = { ...DEF_DISCORD, ...(p.discord || {}) };
+      if (!Array.isArray(S.discord.webhooks)) S.discord.webhooks = [];
+      S.theme = { ...DEF_THEME, vars: { ...DEF_THEME.vars }, ...(p.theme || {}) };
+      if (!S.theme.vars) S.theme.vars = { ...DEF_THEME.vars };
+      S.characters = p.characters || [];
+      S.chats = p.chats || {};
+      S.personas = p.personas || [];
+      S.activePersonaId = p.activePersonaId || null;
+      S.activeCharId = p.activeCharId || null;
+      S.activeChatId = p.activeChatId || {};
+    }
+
+    /** Save state: write to IndexedDB (primary) + lightweight localStorage (cache) */
     function save() {
-      try { localStorage.setItem(SK, JSON.stringify(S)); } catch (e) { console.warn(e); }
+      // Write to IndexedDB (primary — no size limit)
+      if (_idbReady) {
+        // Debounce rapid saves: queue at most one IDB write per animation frame
+        if (!_saveQueued) {
+          _saveQueued = true;
+          requestAnimationFrame(() => {
+            _saveQueued = false;
+            idbPut('state', JSON.parse(JSON.stringify(S))).catch(e =>
+              console.warn('[IDB] save error:', e)
+            );
+          });
+        }
+      }
+
+      // Write lightweight metadata to localStorage (fast sync reads + fallback)
+      try {
+        const lite = { settings: S.settings, user: S.user, theme: S.theme,
+          discord: S.discord, activeCharId: S.activeCharId,
+          activePersonaId: S.activePersonaId, activeChatId: S.activeChatId,
+          personas: S.personas,
+          // Only store character metadata (no avatars/chats) in localStorage
+          characters: S.characters.map(c => ({
+            id: c.id, name: c.name, description: c.description,
+            tags: c.tags, nsfw: c.nsfw, createdAt: c.createdAt
+          }))
+        };
+        localStorage.setItem(SK, JSON.stringify(lite));
+      } catch (e) {
+        // localStorage full — this is fine, IndexedDB has the real data
+        if (e.name === 'QuotaExceededError') {
+          console.warn('[localStorage] Quota exceeded — data is safe in IndexedDB.');
+        } else {
+          console.warn('[localStorage] save error:', e);
+        }
+      }
+
       // Persist settings to disk when running as desktop app
       if (IS_EEL) eelCall('save_settings', JSON.stringify({ ...S.settings, user: S.user, theme: S.theme }));
     }
@@ -3930,7 +4072,7 @@
     function renderSidebar() {
       const el = document.getElementById('char-list');
       if (!S.characters.length) { el.innerHTML = '<div class="char-empty">No characters yet.<br>Press + to create one,<br>or import a card.</div>'; return; }
-      el.innerHTML = S.characters.map(c => `<div class="char-item${c.id === S.activeCharId ? ' active' : ''}" data-id="${c.id}" onclick="selectChar('${c.id}')" oncontextmenu="ctxShow(event,'${c.id}')"><div class="ava ava-sm">${avaHTML(c.avatar, c.name)}</div><div class="char-item-info"><div class="char-item-name">${c.name}</div><div class="char-item-sub">${c.description || (c.tags?.slice(0, 2).join(', ')) || '—'}</div></div></div>`).join('');
+      el.innerHTML = S.characters.map(c => `<div class="char-item${c.id === S.activeCharId ? ' active' : ''}" data-id="${c.id}" onclick="selectChar('${c.id}')" oncontextmenu="ctxShow(event,'${c.id}')"><div class="ava ava-sm">${avaHTML(c.avatar, c.name)}</div><div class="char-item-info"><div class="char-item-name">${escHtml(c.name)}</div><div class="char-item-sub">${escHtml(c.description || (c.tags?.slice(0, 2).join(', ')) || '—')}</div></div></div>`).join('');
     }
     function renderHeader() {
       const c = activeChar(); if (!c) return;
@@ -3938,7 +4080,7 @@
       document.getElementById('header-char-name').textContent = c.name;
       document.getElementById('header-sub').textContent = S.settings.model || 'no model set';
       const sel = document.getElementById('session-sel'), list = getChats(c.id), aid = S.activeChatId[c.id];
-      sel.innerHTML = list.map(ch => `<option value="${ch.id}"${ch.id === aid ? ' selected' : ''}>${ch.title}</option>`).join('');
+      sel.innerHTML = list.map(ch => `<option value="${ch.id}"${ch.id === aid ? ' selected' : ''}>${escHtml(ch.title)}</option>`).join('');
 
       // ── Character detail panel ─────────────────────────────────
       document.getElementById('cdp-name').textContent = c.name;
@@ -3946,14 +4088,14 @@
       const cdpAva = document.getElementById('cdp-avatar');
       if (c.avatar) {
         cdpAva.className = '';
-        cdpAva.innerHTML = `<img src="${c.avatar}" alt="${c.name}">`;
+        cdpAva.innerHTML = `<img src="${escHtml(c.avatar)}" alt="${escHtml(c.name)}">`;
       } else {
         cdpAva.className = 'initials-ava';
         cdpAva.innerHTML = initials(c.name);
       }
 
       document.getElementById('cdp-tags').innerHTML =
-        (c.tags || []).map(t => `<span class="import-tag">${t}</span>`).join('');
+        (c.tags || []).map(t => `<span class="import-tag">${escHtml(t)}</span>`).join('');
 
       const desc = c.description || '';
       document.getElementById('cdp-desc-label').style.display = desc ? '' : 'none';
@@ -3969,7 +4111,7 @@
     function renderMessages() {
       const c = activeChar(); if (!c) return; const chat = activeChat(c.id); if (!chat) return;
       const wrap = document.getElementById('messages'); wrap.innerHTML = '';
-      if (!chat.messages.length) { wrap.innerHTML = `<div class="system-msg">— beginning of "${chat.title}" —</div>`; return; }
+      if (!chat.messages.length) { wrap.innerHTML = `<div class="system-msg">— beginning of "${escHtml(chat.title)}" —</div>`; return; }
       chat.messages.forEach((msg, i) => wrap.appendChild(msgEl(msg, c, i)));
       wrap.scrollTop = wrap.scrollHeight;
       document.getElementById('ibar-hint').textContent = c.systemPrompt ? '↑ system prompt active' : '↑ no system prompt';
@@ -3983,7 +4125,7 @@
       div.dataset.idx = idx;
       const ah = !S.settings.showAva ? ' style="display:none"' : '', nh = !S.settings.showNames ? ' style="display:none"' : '';
       const actions = `<div class="msg-actions"><button class="msg-action-btn" onclick="editMsg(${idx})" title="Edit message">✎</button><button class="msg-action-btn" onclick="deleteMsg(${idx})" title="Delete message">🗑</button></div>`;
-      div.innerHTML = `<div class="msg-ava"${ah}><div class="ava${isUser ? ' blue' : ''}">${avaHTML(ava, name)}</div></div><div class="msg-bubble">${actions}<div class="msg-name"${nh}>${name}</div><div class="msg-content">${md(msg.content)}</div></div>`;
+      div.innerHTML = `<div class="msg-ava"${ah}><div class="ava${isUser ? ' blue' : ''}">${avaHTML(ava, name)}</div></div><div class="msg-bubble">${actions}<div class="msg-name"${nh}>${escHtml(name)}</div><div class="msg-content">${md(msg.content)}</div></div>`;
       return div;
     }
 
@@ -4671,17 +4813,90 @@
     }
     async function* streamLines(res) { const reader = res.body.getReader(), decoder = new TextDecoder(); let buf = ''; while (true) { const { done, value } = await reader.read(); if (done) break; buf += decoder.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop(); for (const l of lines) yield l; } if (buf) yield buf; }
 
+    // ── Token estimation & context budget ──────────────────────────
+    // Rough token estimate: ~4 chars per token (GPT/Claude average for English prose)
+    function estimateTokens(text) { return Math.ceil((text || '').length / 4); }
+
+    /** Known context window sizes for common models */
+    const MODEL_CONTEXT_SIZES = {
+      // Anthropic
+      'claude-opus-4': 200000, 'claude-sonnet-4': 200000, 'claude-haiku-4': 200000,
+      'claude-3-5-sonnet': 200000, 'claude-3-5-haiku': 200000,
+      'claude-3-opus': 200000, 'claude-3-sonnet': 200000, 'claude-3-haiku': 200000,
+      // OpenAI
+      'gpt-4o': 128000, 'gpt-4o-mini': 128000,
+      'gpt-4-turbo': 128000, 'gpt-4': 8192, 'gpt-4-32k': 32768,
+      'gpt-3.5-turbo': 16385, 'gpt-3.5-turbo-16k': 16385,
+      'o1': 200000, 'o1-mini': 128000, 'o1-preview': 128000, 'o3-mini': 200000,
+      // Local / common
+      'llama3': 8192, 'llama3.1': 131072, 'llama3.2': 131072,
+      'mistral': 32768, 'mixtral': 32768, 'phi3': 128000, 'phi4': 128000,
+      'gemma': 8192, 'gemma2': 8192, 'qwen2': 32768, 'deepseek': 32768,
+    };
+
+    /** Look up context window for the current model. Conservative 8K default. */
+    function getModelContextSize() {
+      const model = (S.settings.model || '').toLowerCase();
+      // Exact match first
+      if (MODEL_CONTEXT_SIZES[model]) return MODEL_CONTEXT_SIZES[model];
+      // Prefix match (e.g. "claude-sonnet-4-20250514" matches "claude-sonnet-4")
+      for (const [key, size] of Object.entries(MODEL_CONTEXT_SIZES)) {
+        if (model.startsWith(key) || model.includes(key)) return size;
+      }
+      // OpenRouter format: "provider/model"
+      const afterSlash = model.split('/').pop();
+      if (afterSlash && afterSlash !== model) {
+        for (const [key, size] of Object.entries(MODEL_CONTEXT_SIZES)) {
+          if (afterSlash.startsWith(key) || afterSlash.includes(key)) return size;
+        }
+      }
+      return 8192; // conservative default
+    }
+
+    /**
+     * Build the API messages array, fitting within the model's context window.
+     * Instead of blindly taking the last N messages, we estimate token counts
+     * and pack as many recent messages as will fit.
+     */
+    function buildContextMessages(chat, systemPrompt) {
+      const contextWindow = getModelContextSize();
+      const maxReplyTokens = S.settings.maxTokens || 2048;
+      const sysTokens = estimateTokens(systemPrompt || '');
+      const safetyMargin = 200; // overhead for formatting, special tokens, etc.
+      const budget = contextWindow - maxReplyTokens - sysTokens - safetyMargin;
+
+      if (budget <= 0) {
+        // Edge case: system prompt + max_tokens already exceeds context.
+        // Send at least the last message so the user isn't stuck.
+        const last = chat.messages[chat.messages.length - 1];
+        return last ? [{ role: last.role, content: last.content }] : [];
+      }
+
+      // Walk backwards through messages, accumulating until we hit the budget
+      const result = [];
+      let usedTokens = 0;
+      for (let i = chat.messages.length - 1; i >= 0; i--) {
+        const msg = chat.messages[i];
+        const msgTokens = estimateTokens(msg.content) + 4; // +4 for role/formatting overhead
+        if (usedTokens + msgTokens > budget && result.length > 0) break;
+        result.unshift({ role: msg.role, content: msg.content });
+        usedTokens += msgTokens;
+      }
+
+      return result;
+    }
+
     let sending = false;
     async function doSend(userText) {
       if (sending || !userText.trim()) return; const c = activeChar(); if (!c) return;
       if (!S.settings.apiKey && S.settings.provider !== 'ollama') { toast('⚠ No API key set. Open Settings.'); openSettings(); return; }
       sending = true; document.getElementById('btn-send').disabled = true; document.getElementById('btn-regen').style.display = 'none'; document.getElementById('btn-stop').style.display = 'inline';
       const chat = ensureChat(c.id); chat.messages.push({ role: 'user', content: userText }); save(); renderMessages();
-      const apiMsgs = chat.messages.slice(-(S.settings.context || 20)).map(m => ({ role: m.role, content: m.content }));
       const sys = buildSystemPrompt(c);
+      const apiMsgs = buildContextMessages(chat, sys);
       const wrap = document.getElementById('messages');
       const ph = document.createElement('div'); ph.className = 'message char';
-      ph.innerHTML = `<div class="msg-ava"${!S.settings.showAva ? ' style="display:none"' : ''}><div class="ava">${avaHTML(c.avatar, c.name)}</div></div><div class="msg-bubble"><div class="msg-name"${!S.settings.showNames ? ' style="display:none"' : ''}>${c.name}</div><div class="msg-content streaming-dot" id="_sc"></div></div>`;
+      ph.innerHTML = `<div class="msg-ava"${!S.settings.showAva ? ' style="display:none"' : ''}><div class="ava">${avaHTML(c.avatar, c.name)}</div></div><div class="msg-bubble"><div class="msg-name"${!S.settings.showNames ? ' style="display:none"' : ''}>${escHtml(c.name)}</div><div class="msg-content streaming-dot" id="_sc"></div></div>`;
       wrap.appendChild(ph); wrap.scrollTop = wrap.scrollHeight;
       const sc = document.getElementById('_sc');
       await callAPI(apiMsgs, sys,
@@ -4876,17 +5091,22 @@
       }
     }
 
-    // ── Polling ─────────────────────────────────────────────────────
+    // ── Polling (with overlap guard) ──────────────────────────────────
+    let _dcPolling = false;
     function dcStartPoll() {
       dcStopPoll();
       if (!S.discord.botToken || !S.discord.channelId) return;
       const interval = Math.max(5, S.discord.pollInterval || 10) * 1000;
-      dc.pollTimer = setInterval(() => {
-        if (dc.panelOpen) dcRefreshMessages(false);
+      dc.pollTimer = setInterval(async () => {
+        if (!dc.panelOpen || _dcPolling) return; // skip if previous fetch still in-flight
+        _dcPolling = true;
+        try { await dcRefreshMessages(false); }
+        finally { _dcPolling = false; }
       }, interval);
     }
     function dcStopPoll() {
       if (dc.pollTimer) { clearInterval(dc.pollTimer); dc.pollTimer = null; }
+      _dcPolling = false;
     }
 
     // ── Render messages ────────────────────────────────────────────
@@ -5115,7 +5335,7 @@
           pngBlob = _injectCharaChunkBrowser(imgBytes, chara_b64);
         } else {
           // No avatar — build minimal PNG
-          pngBlob = _buildMinimalPNG(chara_b64);
+          pngBlob = await _buildMinimalPNG(chara_b64);
         }
 
         const filename = safeName(c.name) + '.png';
@@ -5197,7 +5417,7 @@
     }
 
     /** Build a 1×1 placeholder PNG with embedded chara chunk */
-    function _buildMinimalPNG(chara_b64) {
+    async function _buildMinimalPNG(chara_b64) {
       const SIG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
       function makeChunk(typeStr, data) {
         const type = new TextEncoder().encode(typeStr);
@@ -5218,7 +5438,7 @@
       const text = makeChunk('tEXt', td);
       // minimal IDAT: filter byte + 1 white pixel
       const raw = new Uint8Array([0, 255, 255, 255]);
-      const comp = _deflateSync(raw);
+      const comp = await _deflateAsync(raw);
       const idat = makeChunk('IDAT', comp);
       const iend = makeChunk('IEND', new Uint8Array(0));
       const parts = [SIG, ihdr, text, idat, iend];
@@ -5229,7 +5449,7 @@
     }
 
     /** Minimal zlib deflate using CompressionStream */
-    async function _deflateSync(data) {
+    async function _deflateAsync(data) {
       try {
         const cs = new CompressionStream('deflate');
         const w = cs.writable.getWriter(); const r = cs.readable.getReader();
@@ -5504,14 +5724,14 @@
         return;
       }
       strip.innerHTML = _remoteCards.map(c => `
-    <div class="dc-card-item${c.nsfw ? ' nsfw' : ''}" style="width:80px;flex-shrink:0" title="${c.name}" onclick="remoteImportCard(${JSON.stringify(JSON.stringify(c))})">
+    <div class="dc-card-item${c.nsfw ? ' nsfw' : ''}" style="width:80px;flex-shrink:0" title="${escHtml(c.name)}" onclick="remoteImportCard(${escHtml(JSON.stringify(JSON.stringify(c)))})">
       ${c.url
-          ? `<img src="${c.url}" alt="" style="width:80px;height:110px;object-fit:cover;object-position:top;display:block;background:var(--elevated2)" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+          ? `<img src="${escHtml(c.url)}" alt="" style="width:80px;height:110px;object-fit:cover;object-position:top;display:block;background:var(--elevated2)" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
           : ''
         }
       <div style="width:80px;height:110px;background:var(--elevated2);display:${c.url ? 'none' : 'flex'};align-items:center;justify-content:center;font-size:22px;color:var(--text-dim)">◈</div>
       <div style="padding:4px 5px">
-        <div style="font-size:10.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</div>
+        <div style="font-size:10.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(c.name)}</div>
         ${c.nsfw ? '<div style="font-size:8px;font-weight:700;color:var(--red);margin-top:2px">18+ / NSFW</div>' : ''}
       </div>
     </div>`).join('');
@@ -5545,7 +5765,7 @@
         return `<div style="display:flex;align-items:center;gap:9px;padding:7px 9px;background:var(--elevated);border-radius:var(--radius-sm);border:1px solid var(--border)">
       <div class="ava" style="width:28px;height:28px;font-size:10px;flex-shrink:0">${avaHTML(c.avatar, c.name)}</div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:600">${c.name}</div>
+        <div style="font-size:13px;font-weight:600">${escHtml(c.name)}</div>
         <div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;color:${synced ? '#88c470' : 'var(--text-dim)'}">${synced ? '✓ on server' : 'not uploaded'}</div>
       </div>
       <button class="btn-sm btn-sm-ghost" style="height:28px;padding:0 8px;font-size:11px" onclick="pushSingleCard('${c.id}')">↑ Push</button>
@@ -5596,7 +5816,7 @@
           const imgBytes = Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
           pngBlob = _injectCharaChunkBrowser(imgBytes, chara_b64);
         } else {
-          pngBlob = _buildMinimalPNG(chara_b64);
+          pngBlob = await _buildMinimalPNG(chara_b64);
         }
 
         const fd = new FormData();
@@ -5741,16 +5961,21 @@
       }, 0);
     });
 
-    // ── Polling ───────────────────────────────────────────────────
+    // ── Polling (with overlap guard) ─────────────────────────────────
+    let _remotePolling = false;
     function startRemotePoll() {
       stopRemotePoll();
       if (!S.settings.remoteServerUrl) return;
-      _remotePollTimer = setInterval(() => {
-        if (_remotePanelOpen) refreshRemoteMessages(false);
-      }, 5000); // poll every 5s
+      _remotePollTimer = setInterval(async () => {
+        if (!_remotePanelOpen || _remotePolling) return; // skip if previous fetch still in-flight
+        _remotePolling = true;
+        try { await refreshRemoteMessages(false); }
+        finally { _remotePolling = false; }
+      }, 5000);
     }
     function stopRemotePoll() {
       if (_remotePollTimer) { clearInterval(_remotePollTimer); _remotePollTimer = null; }
+      _remotePolling = false;
     }
 
     // ── Auto-push hook (called from saveCharacterToDisk) ──────────
@@ -6032,7 +6257,7 @@
 
     // ── Init ──────────────────────────────────────────────────────
     (async () => {
-      load();
+      await load(); // now async — opens IndexedDB and migrates from localStorage
       await loadFromDisk();
       applyTheme(S.theme.vars, S.theme.customCSS);
       renderSidebar();

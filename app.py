@@ -131,6 +131,36 @@ def save_file_dialog(title, default_name, filetypes_json):
 
 
 # ══════════════════════════════════════════════════════════════
+#  PATH SAFETY
+# ══════════════════════════════════════════════════════════════
+
+def _safe_path(folder: str, filename: str) -> str:
+    """
+    Join folder + filename, then verify the resolved path stays within folder.
+    Prevents path traversal via '../' or symlink tricks.
+    Raises ValueError on violation.
+    """
+    resolved_folder = os.path.realpath(folder)
+    resolved_path   = os.path.realpath(os.path.join(folder, filename))
+    if not resolved_path.startswith(resolved_folder + os.sep) and resolved_path != resolved_folder:
+        raise ValueError(f'Path traversal blocked: {filename!r}')
+    return resolved_path
+
+
+def _safe_full_path(full_path: str, allowed_folder: str) -> str:
+    """
+    Verify that a full file path lives within the allowed folder.
+    Used for functions that receive absolute paths (e.g. log file paths).
+    Raises ValueError on violation.
+    """
+    resolved_folder = os.path.realpath(allowed_folder)
+    resolved_path   = os.path.realpath(full_path)
+    if not resolved_path.startswith(resolved_folder + os.sep):
+        raise ValueError(f'Path traversal blocked: {full_path!r}')
+    return resolved_path
+
+
+# ══════════════════════════════════════════════════════════════
 #  CHARACTER FILE MANAGEMENT
 # ══════════════════════════════════════════════════════════════
 
@@ -153,7 +183,7 @@ def list_character_files(folder):
 @eel.expose
 def load_character_file(folder, filename):
     try:
-        path = os.path.join(folder, filename)
+        path = _safe_path(folder, filename)
         # PNG card in characters folder — extract embedded JSON
         if filename.lower().endswith('.png'):
             result = _read_card_file(path)
@@ -169,7 +199,7 @@ def load_character_file(folder, filename):
 def save_character_file(folder, filename, json_str):
     try:
         os.makedirs(folder, exist_ok=True)
-        path = os.path.join(folder, filename)
+        path = _safe_path(folder, filename)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(json_str)
         return path
@@ -181,7 +211,7 @@ def save_character_file(folder, filename, json_str):
 @eel.expose
 def delete_character_file(folder, filename):
     try:
-        path = os.path.join(folder, filename)
+        path = _safe_path(folder, filename)
         if os.path.exists(path):
             os.remove(path)
         return True
@@ -193,8 +223,8 @@ def delete_character_file(folder, filename):
 @eel.expose
 def rename_character_file(folder, old_name, new_name):
     try:
-        src  = os.path.join(folder, old_name)
-        dest = os.path.join(folder, new_name)
+        src  = _safe_path(folder, old_name)
+        dest = _safe_path(folder, new_name)
         if os.path.exists(src):
             os.rename(src, dest)
         return True
@@ -293,6 +323,9 @@ def list_log_files(logs_folder: str) -> list:
 def load_log_file(path: str) -> str | None:
     """Read and return the contents of a log file."""
     try:
+        # Validate path stays within a known logs folder
+        if DEFAULT_LOGS:
+            _safe_full_path(path, DEFAULT_LOGS)
         with open(path, encoding='utf-8') as f:
             return f.read()
     except Exception as e:
@@ -304,6 +337,9 @@ def load_log_file(path: str) -> str | None:
 def delete_log_file(path: str) -> bool:
     """Delete a log file. Returns True on success."""
     try:
+        # Validate path stays within a known logs folder
+        if DEFAULT_LOGS:
+            _safe_full_path(path, DEFAULT_LOGS)
         if os.path.exists(path):
             os.remove(path)
         return True
@@ -365,7 +401,7 @@ def list_theme_files(themes_folder: str) -> list:
 def load_theme_file(themes_folder: str, filename: str) -> str | None:
     """Load a theme JSON file and return its raw string."""
     try:
-        path = os.path.join(themes_folder, filename)
+        path = _safe_path(themes_folder, filename)
         with open(path, encoding='utf-8') as f:
             return f.read()
     except Exception as e:
@@ -378,7 +414,7 @@ def save_theme_file(themes_folder: str, filename: str, json_str: str) -> str | N
     """Save a theme JSON string to the themes folder. Returns path or None."""
     try:
         os.makedirs(themes_folder, exist_ok=True)
-        path = os.path.join(themes_folder, filename)
+        path = _safe_path(themes_folder, filename)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(json_str)
         return path
@@ -391,7 +427,7 @@ def save_theme_file(themes_folder: str, filename: str, json_str: str) -> str | N
 def delete_theme_file(themes_folder: str, filename: str) -> bool:
     """Delete a theme file."""
     try:
-        path = os.path.join(themes_folder, filename)
+        path = _safe_path(themes_folder, filename)
         if os.path.exists(path):
             os.remove(path)
         return True

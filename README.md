@@ -6,7 +6,7 @@
 
 Create characters, chat with AI, share cards, and connect with others.
 
-[![Python](https://img.shields.io/badge/Python-3.8+-3776ab?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.9+-3776ab?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Eel](https://img.shields.io/badge/Eel-Desktop_GUI-c8894a?style=for-the-badge)](https://github.com/python-eel/Eel)
 [![License](https://img.shields.io/badge/License-MIT-88c470?style=for-the-badge)](LICENSE)
 
@@ -90,7 +90,7 @@ python main.py
 
 Open `persona.html` directly in your browser. Works without Python — you just won't have file system access (no folder pickers, no disk saves, no Discord message reading).
 
-> **Note:** When running in the browser, your data lives in `localStorage`. The desktop app saves to `settings.config` and character/log folders on disk.
+> **Note:** When running in the browser, your data is stored in **IndexedDB** (primary) with a lightweight `localStorage` fallback. The desktop app additionally saves settings and characters to disk.
 
 ---
 
@@ -206,7 +206,7 @@ Compile PersonaAI into a standalone Windows application.
 
 ### How to Build
 
-1. Make sure **Python 3.8+** is installed and **added to PATH**
+1. Make sure **Python 3.9+** is installed and **added to PATH**
 2. Place these files in the same folder: `compile_persona.bat`, `main.py`, `app.py`, `server.py`
 3. **Drag `persona.html` onto `compile_persona.bat`**
 4. Wait for the build to complete
@@ -230,7 +230,7 @@ The build script runs these steps automatically:
 
 ### Build Requirements
 
-- **Python 3.8+** — must be added to PATH during installation
+- **Python 3.9+** — must be added to PATH during installation
 - **Internet** — needed on first run to install dependencies
 - **~500 MB RAM** — the build is designed to be safe on any machine
 - Dependencies are installed automatically: `eel`, `pyinstaller`, `Pillow`
@@ -324,11 +324,13 @@ PersonaAI is built with just 4 core files:
 ```
 PersonaAI/
 ├── main.py                 ← Entry point (10 lines)
-├── app.py                  ← Eel bridge: file I/O, dialogs, PNG parsing (1,117 lines)
-├── server.py               ← Community server: WebSocket, OAuth, API (1,611 lines)
-├── persona.html            ← Complete frontend SPA (3,495 lines)
+├── app.py                  ← Eel bridge: file I/O, dialogs, PNG parsing (~1,150 lines)
+├── server.py               ← Community server: WebSocket, OAuth, API (~1,725 lines)
+├── persona.html            ← Complete frontend SPA (~6,280 lines)
 ├── compile_persona.bat     ← Build script → .exe
 ├── start.py                ← VPS entry point for community server
+├── .gitignore              ← Git ignore rules
+├── CHANGELOG.md            ← Version history
 ├── web/
 │   └── index.html          ← Copy of persona.html (used by Eel)
 └── community/
@@ -348,7 +350,7 @@ PersonaAI/
 | Layer | Technology |
 |-------|-----------|
 | **Desktop GUI** | Python Eel (Chromium wrapper) |
-| **Backend** | Python 3.8+ (stdlib + Pillow) |
+| **Backend** | Python 3.9+ (stdlib + Pillow) |
 | **Frontend** | Vanilla HTML/CSS/JS (zero frameworks) |
 | **Community Server** | Bottle + gevent + gevent-websocket |
 | **Fonts** | Cinzel (headings), Crimson Pro (body), JetBrains Mono (UI/code) |
@@ -369,7 +371,9 @@ PersonaAI/
 
 ### Browser Mode
 
-All data is stored in `localStorage` under the key `persona_v2`.
+Data is stored in **IndexedDB** (primary, no size limit) with a lightweight `localStorage` cache as fallback.
+
+> **Migration:** Users upgrading from v1.5.1 or earlier will have their `localStorage` data automatically migrated to IndexedDB on first load. No manual action is needed.
 
 ---
 
@@ -405,11 +409,26 @@ This project was built for fun! Contributions are welcome:
 
 - [ ] Mobile-responsive layout
 - [ ] Group chat (multiple characters in one session)
-- [ ] Message editing and deletion
+- [x] Message editing and deletion *(added in v1.5.1)*
 - [ ] Image generation integration
 - [ ] Voice input/output (TTS/STT)
 - [ ] Lorebook / World Info support
 - [ ] Character Greeting variations
+
+---
+
+## 🔒 Security
+
+PersonaAI v1.5.2 underwent a comprehensive security audit. Key protections:
+
+- **Path Traversal Prevention** — All file I/O functions validate that resolved paths stay within their expected directories
+- **XSS Protection** — All user-controlled content is HTML-escaped before DOM insertion
+- **Rate Limiting** — Community server endpoints enforce per-user/IP message rate limits
+- **WebSocket Authentication** — Unauthenticated WebSocket connections are rejected
+- **Secure Cookies** — OAuth cookies use `HttpOnly`, `SameSite=Lax`, and conditional `Secure` flags
+- **No Hardcoded Secrets** — API keys must be configured by the user
+
+See the [CHANGELOG](CHANGELOG.md) for full details on all 22 fixes.
 
 ---
 

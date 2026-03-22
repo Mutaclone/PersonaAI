@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.5.2] — 2026-03-22
+
+### 🔒 Security Audit & Hardening
+
+Full-scale codebase audit: **26 issues identified, 22 fixed** across all files.
+
+#### 🔴 Critical — Fixed
+
+- **5 MB localStorage Timebomb** — Migrated primary storage from `localStorage` (5 MB hard limit) to **IndexedDB** (unlimited). Data is transparently migrated on first load; `localStorage` retains only a lightweight metadata cache as fallback. Quota errors are now handled gracefully. (`persona.html`)
+- **Asynchronous Polling Overlaps** — Added lock guards (`_dcPolling`, `_remotePolling`) to Discord and Remote Server polling intervals. If a network request is still in-flight when the next interval fires, the duplicate is skipped. Prevents request flooding, memory leaks, and UI stuttering on slow connections. (`persona.html`)
+- **Blind LLM Context Overflow** — Replaced the naive "last 20 messages" slice with a token-aware `buildContextMessages()` function. Each message is counted using the `estimateTokens()` heuristic, and a per-model context window lookup table prevents silently exceeding API limits. (`persona.html`)
+
+#### 🟠 High — Fixed
+
+- **Path Traversal in File I/O** — Added `_safe_path()` and `_safe_full_path()` guards to **all 9** eel-exposed file functions (`load_character_file`, `save_character_file`, `delete_character_file`, `rename_character_file`, `load_log_file`, `delete_log_file`, `load_theme_file`, `save_theme_file`, `delete_theme_file`). Filenames like `../../etc/passwd` are now blocked before any disk access. (`app.py`)
+- **Path Traversal in Card Upload** — Server card upload now strips path separators with `os.path.basename()` before sanitisation, and adds a final path-containment check before saving. (`server.py`)
+- **XSS via Character Card Injection** — Added `escHtml()` utility and applied it to **all `innerHTML` interpolation** of user-controlled content: character names, descriptions, tags, chat titles, card names, avatar URLs, and streaming placeholders (~15 locations). Malicious cards like `<img src=x onerror=alert(1)>` no longer execute. (`persona.html`)
+- **Hard-Coded API Key Removed** — Removed the plaintext base64-encoded `remoteApiKey` from `DEF_SETTINGS`. Users must now configure their own key. (`persona.html`)
+- **Duplicate Import + Weak Identity Hash** — Removed duplicate `import hashlib` and unused `import hmac`. Upgraded anonymous user ID generation from MD5 (8 hex = 32 bits, trivially collidable) to SHA-256 (12 hex = 48 bits). (`server.py`)
+- **Data Race in JSON Storage** — `_load()` now acquires `_lock` (previously only `_save()` did). Added `_load_modify_save()` for atomic read-modify-write operations, preventing concurrent request data loss. (`server.py`)
+
+#### 🟡 Medium — Fixed
+
+- **Async PNG Builder Bug** — `_buildMinimalPNG()` now correctly declared as `async` and `await`s the inner `_deflateAsync()` call. Previously, cards without avatars would silently produce corrupted Blobs (containing a Promise object) when sharing to Discord or pushing to the server. (`persona.html`)
+- **OAuth Cookies Unsecured** — Added `samesite='Lax'` and conditional `secure=True` (auto-enabled on HTTPS) to both `oauth_state` and `persona_token` cookies. (`server.py`)
+- **WebSocket Auth Bypass** — Unauthenticated WebSocket connections are now rejected with an error message and closed, instead of being registered and receiving all broadcast events. (`server.py`)
+- **No Rate Limiting** — Added per-user/IP rate limiting (max 10 messages per 10 seconds) to the message posting endpoint. Anonymous users and authenticated users are tracked separately. (`server.py`)
+- **`_serve_client_with_error()` Undefined** — Defined the missing function that was called in the OAuth error paths. Any OAuth failure previously crashed the server with `NameError`. (`server.py`)
+- **Duplicate Element IDs in Community Client** — Removed the duplicate `id="chat-messages"` div from the DM view and renamed the DM input wrapper to `id="dm-input-area"`. `getElementById()` now returns the correct elements. (`server.py`)
+- **Stale `web/index.html`** — Synced `web/index.html` with the latest `persona.html` so the compiled exe includes all fixes. (`web/index.html`)
+
+#### 🔵 Low / Informational — Fixed
+
+- **Missing CORS Preflight Handler** — Added explicit `OPTIONS` route handler with `Access-Control-Max-Age` and added `X-API-Key` to allowed headers. (`server.py`)
+- **Misleading Function Name** — Renamed `_deflateSync` → `_deflateAsync` (the function is async). The old name contributed to the PNG builder bug. (`persona.html`)
+- **Unused `_SECRET` Variable** — Removed the unused `_SECRET = base64.urlsafe_b64encode(os.urandom(32))`. The `hmac` import was also removed. (`server.py`)
+- **Icon Path Quoting** — Fixed `compile_persona.bat` icon argument quoting for paths with spaces. (`compile_persona.bat`)
+
+#### Added
+
+- **`.gitignore`** — Comprehensive gitignore covering Python artifacts, PyInstaller output, compiled executables, IDE files, virtual environments, runtime data, and community server data.
+- **Rate Limiting** — `_check_rate_limit()` with configurable window and threshold (`_RATE_WINDOW = 10s`, `_RATE_MAX = 10`).
+- **Atomic File Operations** — `_load_modify_save()` for safe concurrent JSON file updates.
+
+---
+
 ## [1.5.1] — 2026-03-21
 
 ### ✨ Features

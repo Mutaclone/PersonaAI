@@ -1,0 +1,57 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.egg-info/
+*.egg
+*.whl
+
+# ── PyInstaller ───────────────────────────────────────────────
+#  build/ and dist/ are kept locally as cache for faster rebuilds,
+#  but should NOT be committed to the repo.
+build/
+dist/
+*.spec
+
+# ── Compiled executables ──────────────────────────────────────
+#  Do not commit built .exe files. Distribute via Releases instead.
+*.exe
+
+# ── IDE / Editor ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Virtual environments ──────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ── Runtime data ──────────────────────────────────────────────
+#  These are created at runtime next to the exe and should not
+#  be committed.
+settings.config
+characters/
+logs/
+themes/
+
+# ── Community server data ─────────────────────────────────────
+#  rooms.json IS tracked (it contains default room config).
+#  Everything else in community/ is runtime data.
+community/users.json
+community/messages.json
+community/posts.json
+community/dms.json
+community/sessions.json
+community/uploads/
+
+# ── OS artifacts ──────────────────────────────────────────────
+*.log
+*.tmp

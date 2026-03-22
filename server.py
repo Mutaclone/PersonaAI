@@ -13,15 +13,14 @@ import sys
 import json
 import time
 import uuid
-import hmac
 import hashlib
 import threading
 import urllib.request
 import urllib.parse
 import urllib.error
 import base64
-import hashlib
 import mimetypes
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -50,21 +49,60 @@ os.makedirs(COMMUNITY_DIR, exist_ok=True)
 _lock = threading.Lock()
 
 def _load(path, default):
-    try:
-        if os.path.exists(path):
-            with open(path, encoding='utf-8') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f'[server] load {path}: {e}')
+    """Load JSON from path under the global lock (prevents TOCTOU races)."""
+    with _lock:
+        try:
+            if os.path.exists(path):
+                with open(path, encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f'[server] load {path}: {e}')
     return default
 
 def _save(path, data):
+    """Save JSON to path under the global lock."""
     with _lock:
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f'[server] save {path}: {e}')
+
+def _load_modify_save(path, default, modify_fn):
+    """
+    Atomically load → modify → save a JSON file.
+    modify_fn receives the loaded data and must return the (possibly modified) data.
+    Prevents data races from concurrent read-modify-write cycles.
+    """
+    with _lock:
+        try:
+            if os.path.exists(path):
+                with open(path, encoding='utf-8') as f:
+                    data = json.load(f)
+            else:
+                data = default() if callable(default) else (default.copy() if isinstance(default, (dict, list)) else default)
+            result = modify_fn(data)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return result
+        except Exception as e:
+            print(f'[server] load_modify_save {path}: {e}')
+            return None
+
+# ── Rate limiting ─────────────────────────────────────────────
+_rate_limits: dict[str, list] = defaultdict(list)
+_RATE_WINDOW  = 10   # seconds
+_RATE_MAX     = 10   # max messages per window
+
+def _check_rate_limit(identifier: str) -> bool:
+    """Return True if the identifier is rate-limited (should be rejected)."""
+    now = time.time()
+    # Purge old entries
+    _rate_limits[identifier] = [t for t in _rate_limits[identifier] if now - t < _RATE_WINDOW]
+    if len(_rate_limits[identifier]) >= _RATE_MAX:
+        return True
+    _rate_limits[identifier].append(now)
+    return False
 
 def _now():
     return datetime.utcnow().isoformat() + 'Z'
@@ -90,7 +128,6 @@ _ensure_defaults()
 #  SESSION MANAGEMENT
 # ══════════════════════════════════════════════════════════════
 
-_SECRET = base64.urlsafe_b64encode(os.urandom(32)).decode()
 
 def _make_session(discord_user: dict) -> str:
     """Create a session token and persist the user."""
@@ -289,11 +326,18 @@ if _BOTTLE_OK:
     def _cors():
         response.headers['Access-Control-Allow-Origin']  = '*'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-API-Key'
 
     @app.hook('after_request')
     def enable_cors():
         _cors()
+
+    @app.route('<:re:.*>', method='OPTIONS')
+    def cors_preflight():
+        """Handle CORS preflight requests for all routes."""
+        _cors()
+        response.headers['Access-Control-Max-Age'] = '3600'
+        return ''
 
     def _json(data, status=200):
         response.content_type = 'application/json'
@@ -335,13 +379,26 @@ if _BOTTLE_OK:
         if not _config['discord_client_id']:
             return _json({'error': 'Discord OAuth not configured on this server.'}, 503)
         state = base64.urlsafe_b64encode(os.urandom(16)).decode()
-        response.set_cookie('oauth_state', state, httponly=True, max_age=600)
+        response.set_cookie('oauth_state', state, httponly=True, max_age=600,
+                            samesite='Lax', secure=request.urlparts.scheme == 'https')
         url = _discord_auth_url(
             _config['discord_client_id'],
             _config['redirect_uri'],
             state,
         )
         redirect(url)
+
+    def _serve_client_with_error(error_msg: str):
+        """Return the client HTML with an embedded error message for OAuth failures."""
+        return HTTPResponse(
+            body=f'<html><body style="background:#0f0d10;color:#e4ddd3;font-family:sans-serif;'
+                 f'display:flex;align-items:center;justify-content:center;height:100vh">'
+                 f'<div style="text-align:center"><h2 style="color:#c84a4a">Login Failed</h2>'
+                 f'<p>{error_msg}</p><a href="/" style="color:#c8894a">← Back to Home</a></div>'
+                 f'</body></html>',
+            status=200,
+            headers={'Content-Type': 'text/html; charset=utf-8'},
+        )
 
     @app.route('/auth/callback')
     def auth_callback():
@@ -369,7 +426,8 @@ if _BOTTLE_OK:
 
         session_token = _make_session(discord_user)
         response.set_cookie('persona_token', session_token,
-                             httponly=True, max_age=86400 * 30)
+                             httponly=True, max_age=86400 * 30,
+                             samesite='Lax', secure=request.urlparts.scheme == 'https')
         redirect('/')
 
     @app.route('/logout')
@@ -464,11 +522,17 @@ if _BOTTLE_OK:
             author_id   = user['id']
             avatar_url  = (f"https://cdn.discordapp.com/avatars/{user['id']}/{user['avatar']}.png?size=64"
                            if user.get('avatar') else None)
+            rate_id = f'user:{author_id}'
         else:
             # Anonymous Persona client — use display name from body
             author_name = (data.get('author') or 'Anonymous')[:64]
-            author_id   = 'anon_' + hashlib.md5(author_name.encode()).hexdigest()[:8]
+            author_id   = 'anon_' + hashlib.sha256(author_name.encode()).hexdigest()[:12]
             avatar_url  = data.get('avatar') if data.get('avatar','').startswith('http') else None
+            rate_id = f'ip:{request.remote_addr}'
+
+        # Rate limiting
+        if _check_rate_limit(rate_id):
+            abort(429, 'Too many messages. Please slow down.')
 
         msg = {
             'id':         _uid(), 'room_id': room_id,
@@ -687,11 +751,17 @@ if _BOTTLE_OK:
         fname = upload.filename
         if not fname.lower().endswith(('.png', '.json')):
             abort(400, 'Only .png and .json card files are accepted')
-        # Sanitise filename
+        # Sanitise filename — strip path separators and traversal sequences
+        fname  = os.path.basename(fname)
         fname  = ''.join(c for c in fname if c.isalnum() or c in '._- ')[:80]
+        if not fname or fname.startswith('.'):
+            abort(400, 'Invalid filename')
         folder = _config['uploads_folder']
         os.makedirs(folder, exist_ok=True)
         save_path = os.path.join(folder, fname)
+        # Final path-containment check
+        if not os.path.realpath(save_path).startswith(os.path.realpath(folder) + os.sep):
+            abort(400, 'Invalid filename')
         upload.save(save_path, overwrite=True)
 
         is_nsfw = request.forms.get('nsfw') in ['1', 'true', 'True']
@@ -730,6 +800,15 @@ if _BOTTLE_OK:
 
         token = request.query.get('token', '')
         user  = _get_session(token)
+
+        # Reject unauthenticated WebSocket connections
+        if not user:
+            try:
+                ws.send(json.dumps({'type': 'error', 'message': 'Authentication required.'}))
+                ws.close()
+            except Exception:
+                pass
+            return
 
         # Register
         with _ws_lock:
@@ -1067,9 +1146,8 @@ input:focus,textarea:focus{border-color:var(--accent);}
 
     <!-- DM view -->
     <div class="view" id="view-dm">
-      <div id="chat-messages" style="display:none"></div>
       <div id="dm-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;"></div>
-      <div id="chat-input-area">
+      <div id="dm-input-area">
         <div class="chat-input-row">
           <textarea id="dm-input" rows="1" placeholder="Direct message…"></textarea>
           <button class="send-btn" id="btn-dm-send">➤</button>

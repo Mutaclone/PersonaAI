@@ -176,7 +176,7 @@ if errorlevel 1 (
     goto :icon_done
 )
 echo         Converted to: icon.ico
-set "ICON_ARG=--icon "%ICO_PATH%""
+set "ICON_ARG=--icon \"%ICO_PATH%\""
 
 :icon_done
 
